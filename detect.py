@@ -5,6 +5,8 @@ import threading
 import torch
 import torch.backends.cudnn as cudnn
 import numpy as np
+import torchvision
+
 from data import cfg_mnet, cfg_re50, cfg_mnetv3, cfg_gnet
 from layers.functions.prior_box import PriorBox
 from utils.nms.py_cpu_nms import py_cpu_nms
@@ -310,6 +312,29 @@ def save_label(labels, label_path):
 # file_path = './Male/'
 # dir_list = get_file_list(file_path)
 
+
+
+def CalculationIndex(coordinate):
+# -------------------- 计算ear --------------------------
+    leftEye, rightEye = coordinate[60:68], coordinate[68:76]
+    leftEAR, rightEAR = eye_aspect_ratio(leftEye), eye_aspect_ratio(rightEye)
+    ear = (leftEAR + rightEAR) / 2.0
+# -------------------- 计算mar --------------------------
+    mouth = coordinate[76:96]
+    mar = mouth_aspect_ratio(mouth)
+# -------------------- 计算pitch yaw roll --------------------------
+    TRACKED_POINTS = [33, 38, 50, 46, 60, 64, 68, 72, 55, 59, 76, 82, 85, 16]
+    euler_angles_landmark = []
+    for index in TRACKED_POINTS:
+        euler_angles_landmark.append((coordinate[index]).tolist())
+    euler_angles_landmark = np.asarray(euler_angles_landmark).reshape((-1, 28))
+    euler_angle = calculate_pitch_yaw_roll(euler_angles_landmark[0])
+    # print('e:',euler_angle)
+    pitch = format(euler_angle[0, 0])
+    yaw = format(euler_angle[1, 0])
+    roll = format(euler_angle[2, 0])
+    return ear, mar, pitch, yaw, roll
+
 if __name__ == '__main__':
 # ------------------------------------ 环境配置 ------------------------------------------
     T1 = time.perf_counter()
@@ -333,38 +358,42 @@ if __name__ == '__main__':
     args = parser.parse_args()
     torch.set_grad_enabled(False)
     torch.set_grad_enabled(False)
-    cfg = cfg_mnetv3
 
-    if args.network == "mobile0.25":
-        from models.retinaface_m import RetinaFace
-
-        cfg = cfg_mnet
-    elif args.network == "resnet50":
-        from models.retinaface_m import RetinaFace
-
-        cfg = cfg_re50
-    elif args.network == "ghostnet":
-        from models.retinaface_g import RetinaFace
-
-        cfg = cfg_gnet
-    elif args.network == "mobilev3":
-        from models.retinaface_g import RetinaFace
-
-        cfg = cfg_mnetv3
+    # cfg = cfg_mnetv3
+    # if args.network == "mobile0.25":
+    #     from models.retinaface_m import RetinaFace
+    #
+    #     cfg = cfg_mnet
+    # elif args.network == "resnet50":
+    #     from models.retinaface_m import RetinaFace
+    #
+    #     cfg = cfg_re50
+    # elif args.network == "ghostnet":
+    #     from models.retinaface_g import RetinaFace
+    #
+    #     cfg = cfg_gnet
+    # elif args.network == "mobilev3":
+    #     from models.retinaface_g import RetinaFace
+    #
+    #     cfg = cfg_mnetv3
 
 # ------------------------------------ 网络和模型 ------------------------------------------
-    net = RetinaFace(cfg=cfg, phase='test')
-    net = load_model(net, args.trained_model, args.cpu)
-    net.eval()
-    print('Finished loading model!')
-    cudnn.benchmark = True
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = net.to(device)
-    pfld_backbone = mobile_vit_small()
+#     net = RetinaFace(cfg=cfg, phase='test')
+#     net = load_model(net, args.trained_model, args.cpu)
+#     net.eval()
+#     print('Finished loading model!')
+#     cudnn.benchmark = True
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     net = net.to(device)
+#     pfld_backbone = mobile_vit_small()
     checkpoint = torch.load(args.model_path, map_location=device)
+    pfld_backbone = PFLDInference().to(device)
     pfld_backbone.load_state_dict(checkpoint['pfld_backbone'])
     pfld_backbone = pfld_backbone.to(device)
     pfld_backbone.eval()
+    pfld_backbone = pfld_backbone.to(device)
+    transform = torchvision.transforms.Compose(
+        [torchvision.transforms.ToTensor()])
 
 # ------------------------------------ 校验参数 ------------------------------------------
     EYE_AR_THRESH = 0.2  # 眼睛EAR阈值   5帧
@@ -378,18 +407,18 @@ if __name__ == '__main__':
     TOTAL_MAR = 0
     TOTAL_POSTURE = 0
     eRoll = 0
+
+# ------------------------------------ 开启摄像头 ------------------------------------------
+
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FPS, 300)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_alt2.xml')
-
     while True:
         ret, img = cap.read()
-        # img = cv2.resize(img, (320, 240))  # 这里可以调整分辨率大小
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         # 人脸检测
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        print(faces)
         x, y, w, h = 3,3,3,3
         try:
             x, y, w, h = faces[0]
@@ -406,78 +435,189 @@ if __name__ == '__main__':
         if not ret:
             break
         start = time.time()
-        img_draw, ear, mar, pitch, yaw, roll = detect(img)
-        # print(time.time() - start)
-        # start = time.time()
+        height, width = img.shape[:2]
+        bounding_boxes, landmarks = detect_faces(img)
+        for box in bounding_boxes:
+            x1, y1, x2, y2 = (box[:4] + 0.5).astype(np.int32)
 
-        cv2.putText(img_draw, "ear: {:.2f}".format(ear), (30, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-        cv2.putText(img_draw, "mar: {:.2f}".format(mar), (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-        cv2.putText(img_draw, "pitch: {}".format(pitch), (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),1)
-        cv2.putText(img_draw, "yaw: {}".format(yaw), (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),   1)
-        cv2.putText(img_draw, "roll: {}".format(roll), (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-        # print(time.time() - start)
+            w = x2 - x1 + 1
+            h = y2 - y1 + 1
+            cx = x1 + w // 2
+            cy = y1 + h // 2
 
+            size = int(max([w, h]) * 1.1)
+            x1 = cx - size // 2
+            x2 = x1 + size
+            y1 = cy - size // 2
+            y2 = y1 + size
 
-###########################    眼部疲劳检测     ###########################
-        ear = ear if ear != 0 else 1
-        if ear <= EYE_AR_THRESH:  # 眼睛长宽比：0.25
-            COUNTER_EYE += 1
-        if ear > EYE_AR_THRESH:
-            COUNTER_EYE = 0
-        if COUNTER_EYE >= 4:
-            print(COUNTER_EYE)
-            COUNTER_EYE = 0
-            event_queue.put("play_sound")
-            cv2.putText(img_draw, "疲劳状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-            print("疲劳状态")
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(width, x2)
+            y2 = min(height, y2)
 
+            edx1 = max(0, -x1)
+            edy1 = max(0, -y1)
+            edx2 = max(0, x2 - width)
+            edy2 = max(0, y2 - height)
 
+            cropped = img[y1:y2, x1:x2]
+            if (edx1 > 0 or edy1 > 0 or edx2 > 0 or edy2 > 0):
+                cropped = cv2.copyMakeBorder(cropped, edy1, edy2, edx1, edx2,
+                                             cv2.BORDER_CONSTANT, 0)
 
+            input = cv2.resize(cropped, (112, 112))
+            input = transform(input).unsqueeze(0).to(device)
+            _, landmarks = pfld_backbone(input)
+            pre_landmark = landmarks[0]
+            pre_landmark = pre_landmark.cpu().detach().numpy().reshape(
+                -1, 2) * [size, size] - [edx1, edy1]
+            for (x, y) in pre_landmark.astype(np.int32):
+                cv2.circle(img, (x1 + x, y1 + y), 1, (0, 0, 255),2)
+            if len(pre_landmark) > 0:
+                ear, mar, pitch, yaw, roll = CalculationIndex(pre_landmark.astype(np.int32))
+                cv2.putText(img, "ear: {:.2f}".format(ear), (30, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),1)
+                cv2.putText(img, "mar: {:.2f}".format(mar), (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+                cv2.putText(img, "pitch: {}".format(pitch), (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),1)
+                cv2.putText(img, "yaw: {}".format(yaw), (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),   1)
+                cv2.putText(img, "roll: {}".format(roll), (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+        ###########################    眼部疲劳检测     ###########################
+                ear = ear if ear != 0 else 1
+                if ear <= EYE_AR_THRESH:  # 眼睛长宽比：0.25
+                    COUNTER_EYE += 1
+                if ear > EYE_AR_THRESH:
+                    COUNTER_EYE = 0
+                if COUNTER_EYE >= 4:
+                    print(COUNTER_EYE)
+                    COUNTER_EYE = 0
+                    event_queue.put("play_sound")
+                    cv2.putText(img, "疲劳状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+                    print("疲劳状态")
 
-###########################   打哈欠检测     ###########################
-        mar = mar if (mar) is not None else 5
-        if mar >= MAR_THRESH:  #
-            COUNTER_MAR += 1
-        if mar < MAR_THRESH:
-            COUNTER_MAR = 0
-        if COUNTER_MAR >= 3:
-            COUNTER_MAR = 0
-            event_queue.put("play_sound")
-            cv2.putText(img_draw, "打哈欠状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-            print("打哈欠状态")
+        ###########################   打哈欠检测     ###########################
+                mar = mar if (mar) is not None else 5
+                if mar >= MAR_THRESH:  #
+                    COUNTER_MAR += 1
+                if mar < MAR_THRESH:
+                    COUNTER_MAR = 0
+                if COUNTER_MAR >= 3:
+                    COUNTER_MAR = 0
+                    event_queue.put("play_sound")
+                    cv2.putText(img, "打哈欠状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+                    print("打哈欠状态")
 
+        ###########################   姿态异常检测     ###########################
+                pitch = pitch if pitch != 0 else 0
+                yaw = yaw if yaw is not None else 0
+                if abs(float(pitch)) >= 20 or abs(float(yaw)) >= 9:
+                    COUNTER_POSTURE += 1
+                if COUNTER_POSTURE >= 3:
+                    COUNTER_POSTURE = 0
+                    event_queue.put("play_sound")
+                    cv2.putText(img, "姿态异常", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+                    print("姿态异常")
+                else:
+                    COUNTER_POSTURE = 0
 
-
-###########################   姿态异常检测     ###########################
-        pitch = pitch if pitch != 0 else 0
-        yaw = yaw if yaw is not None else 0
-        if abs(float(pitch)) >= 20 or abs(float(yaw)) >= 9:
-            COUNTER_POSTURE += 1
-        if COUNTER_POSTURE >= 3:
-            COUNTER_POSTURE = 0
-            event_queue.put("play_sound")
-            cv2.putText(img_draw, "姿态异常", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
-            print("姿态异常")
-        else:
-            COUNTER_POSTURE = 0
-
-
-
-        #
-        #
-        # else:
-        #     # 如果连续3次都小于阈值，则表示进行了一次眨眼活动
-        #     if COUNTER >= EYE_AR_CONSEC_FRAMES:  # 阈值：5
-        #         TOTAL += 1
-        #         E.append(COUNTER)
-        #     # 重置眼帧计数器
-        #     COUNTER = 0
-        #     if ear < 0.20:  # 眼睛长宽比：0.2
-        #         eRoll += 1
-        cv2.imshow('face_landmark_98', img_draw)
+        cv2.imshow('face_landmark_68', img)
         if cv2.waitKey(10) == 27:
             break
-    print("end")
+
+#         ret, img = cap.read()
+#         # img = cv2.resize(img, (320, 240))  # 这里可以调整分辨率大小
+#         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+#
+#         # 人脸检测
+#         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+#         print(faces)
+#         x, y, w, h = 3,3,3,3
+#         try:
+#             x, y, w, h = faces[0]
+#         except:
+#             pass
+#         # 边界检查，确保裁剪区域不超出图像边界
+#         x1 = max(max(0, x) - 51, 3)
+#         y1 = max(max(0, y) - 51, 3)
+#         x2 = min(x + w, img.shape[1]) + 50
+#         y2 = min(y + h, img.shape[0]) + 50
+#
+#         # 裁剪图像
+#         img = img[y1:y2, x1:x2]
+#         if not ret:
+#             break
+#         start = time.time()
+#         img_draw, ear, mar, pitch, yaw, roll = detect(img)
+#         # print(time.time() - start)
+#         # start = time.time()
+#
+#         cv2.putText(img_draw, "ear: {:.2f}".format(ear), (30, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#         cv2.putText(img_draw, "mar: {:.2f}".format(mar), (30, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#         cv2.putText(img_draw, "pitch: {}".format(pitch), (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),1)
+#         cv2.putText(img_draw, "yaw: {}".format(yaw), (30, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255),   1)
+#         cv2.putText(img_draw, "roll: {}".format(roll), (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#         # print(time.time() - start)
+#
+#
+# ###########################    眼部疲劳检测     ###########################
+#         ear = ear if ear != 0 else 1
+#         if ear <= EYE_AR_THRESH:  # 眼睛长宽比：0.25
+#             COUNTER_EYE += 1
+#         if ear > EYE_AR_THRESH:
+#             COUNTER_EYE = 0
+#         if COUNTER_EYE >= 4:
+#             print(COUNTER_EYE)
+#             COUNTER_EYE = 0
+#             event_queue.put("play_sound")
+#             cv2.putText(img_draw, "疲劳状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#             print("疲劳状态")
+#
+#
+#
+#
+# ###########################   打哈欠检测     ###########################
+#         mar = mar if (mar) is not None else 5
+#         if mar >= MAR_THRESH:  #
+#             COUNTER_MAR += 1
+#         if mar < MAR_THRESH:
+#             COUNTER_MAR = 0
+#         if COUNTER_MAR >= 3:
+#             COUNTER_MAR = 0
+#             event_queue.put("play_sound")
+#             cv2.putText(img_draw, "打哈欠状态", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#             print("打哈欠状态")
+#
+#
+#
+# ###########################   姿态异常检测     ###########################
+#         pitch = pitch if pitch != 0 else 0
+#         yaw = yaw if yaw is not None else 0
+#         if abs(float(pitch)) >= 20 or abs(float(yaw)) >= 9:
+#             COUNTER_POSTURE += 1
+#         if COUNTER_POSTURE >= 3:
+#             COUNTER_POSTURE = 0
+#             event_queue.put("play_sound")
+#             cv2.putText(img_draw, "姿态异常", (30, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 1)
+#             print("姿态异常")
+#         else:
+#             COUNTER_POSTURE = 0
+#
+#
+#
+#         #
+#         #
+#         # else:
+#         #     # 如果连续3次都小于阈值，则表示进行了一次眨眼活动
+#         #     if COUNTER >= EYE_AR_CONSEC_FRAMES:  # 阈值：5
+#         #         TOTAL += 1
+#         #         E.append(COUNTER)
+#         #     # 重置眼帧计数器
+#         #     COUNTER = 0
+#         #     if ear < 0.20:  # 眼睛长宽比：0.2
+#         #         eRoll += 1
+#         cv2.imshow('face_landmark_98', img_draw)
+#         if cv2.waitKey(10) == 27:
+#             break
+#     print("end")
 #     #
 #     # for dir in dir_list:
 #     #     ext = os.path.splitext(dir)[1]  # 获取后缀名
