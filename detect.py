@@ -329,7 +329,7 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--save_image', action="store_true", default=True, help='show detection results')
     parser.add_argument('--vis_thres', default=0.9, type=float, help='visualization_threshold')
     # parser.add_argument('--model_path', default="./weights/best_checkpoint_epoch_.pth.tar", type=str)
-    parser.add_argument('--model_path', default="./weights/checkpoint_epoch_500.pth.tar")
+    parser.add_argument('--model_path', default="./weights/best_checkpoint_epoch_.pth.tar")
     args = parser.parse_args()
     torch.set_grad_enabled(False)
     torch.set_grad_enabled(False)
@@ -390,7 +390,7 @@ if __name__ == '__main__':
         # 人脸检测
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
         print(faces)
-        x, y, w, h = 3,3,3,3
+        x, y, w, h = 0, 0, 0, 0
         try:
             x, y, w, h = faces[0]
         except:
